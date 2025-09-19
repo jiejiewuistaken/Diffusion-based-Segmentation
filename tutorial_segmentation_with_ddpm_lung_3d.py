@@ -85,6 +85,8 @@ config = {
     'attention_levels': (False, False, False, False),  # Added attention to deeper levels
     'num_res_blocks': 2,
     'lr': 1e-4,
+    # prediction_type: 'epsilon' (original), 'x0' (predict clean mask), or 'v' (velocity)
+    'prediction_type': 'v',
     'notes': "Use Florentin suggested params. pre-cropped. "
 }
 
@@ -484,9 +486,25 @@ for epoch in range(n_epochs):
             
             # Model prediction
             prediction = model(x=combined, timesteps=timesteps)
-            
-            # Calculate loss
-            loss = F.mse_loss(prediction.float(), noise.float())
+
+            # Calculate loss based on prediction_type
+            pred_type = config.get('prediction_type', 'epsilon')
+            if pred_type == 'epsilon':
+                target = noise
+            elif pred_type == 'x0':
+                # Directly predict the clean segmentation mask x0
+                target = seg
+            elif pred_type == 'v':
+                # Predict velocity v = sqrt(alpha_bar)*eps - sqrt(1-alpha_bar)*x0
+                alphas_cumprod = scheduler.alphas_cumprod.to(seg.device)
+                alpha_bar = alphas_cumprod[timesteps].float().view(-1, 1, 1, 1, 1)
+                sqrt_alpha_bar = torch.sqrt(alpha_bar)
+                sqrt_one_minus_alpha_bar = torch.sqrt(1.0 - alpha_bar)
+                target = sqrt_alpha_bar * noise - sqrt_one_minus_alpha_bar * seg
+            else:
+                raise ValueError(f"Unsupported prediction_type: {pred_type}")
+
+            loss = F.mse_loss(prediction.float(), target.float())
             
         scaler.scale(loss).backward()
         # 添加梯度裁剪（最大范数设为1.0）
@@ -513,8 +531,22 @@ for epoch in range(n_epochs):
                     noisy_seg = scheduler.add_noise(original_samples=seg, noise=noise, timesteps=timesteps)
                     combined = torch.cat((images, noisy_seg), dim=1)
                     prediction = model(x=combined, timesteps=timesteps)
-                    
-                    val_loss = F.mse_loss(prediction.float(), noise.float())
+                    # Validation loss mirrors training loss target
+                    pred_type = config.get('prediction_type', 'epsilon')
+                    if pred_type == 'epsilon':
+                        target = noise
+                    elif pred_type == 'x0':
+                        target = seg
+                    elif pred_type == 'v':
+                        alphas_cumprod = scheduler.alphas_cumprod.to(seg.device)
+                        alpha_bar = alphas_cumprod[timesteps].float().view(-1, 1, 1, 1, 1)
+                        sqrt_alpha_bar = torch.sqrt(alpha_bar)
+                        sqrt_one_minus_alpha_bar = torch.sqrt(1.0 - alpha_bar)
+                        target = sqrt_alpha_bar * noise - sqrt_one_minus_alpha_bar * seg
+                    else:
+                        raise ValueError(f"Unsupported prediction_type: {pred_type}")
+
+                    val_loss = F.mse_loss(prediction.float(), target.float())
                     
             val_epoch_loss += val_loss.item()
             
@@ -684,8 +716,30 @@ for k in range(n):
                 # Get model prediction
                 model_output = model(combined, timesteps=torch.Tensor((t,)).to(device))
                 
-                # Update current volume using scheduler
-                current_vol, _ = scheduler.step(model_output, t, current_vol)
+                # Convert model_output to epsilon if needed for the scheduler
+                pred_type = config.get('prediction_type', 'epsilon')
+                if pred_type == 'epsilon':
+                    eps_pred = model_output
+                else:
+                    # Retrieve alpha_bar scalars for this timestep
+                    alphas_cumprod = scheduler.alphas_cumprod.to(device)
+                    # t may be tensor or int; ensure int index
+                    t_index = int(t) if not isinstance(t, int) else t
+                    alpha_bar = alphas_cumprod[t_index].float().view(1, 1, 1, 1, 1)
+                    sqrt_alpha_bar = torch.sqrt(alpha_bar)
+                    sqrt_one_minus_alpha_bar = torch.sqrt(1.0 - alpha_bar).clamp_min(1e-12)
+
+                    if pred_type == 'x0':
+                        # eps = (x_t - sqrt(alpha_bar) * x0_pred) / sqrt(1-alpha_bar)
+                        eps_pred = (current_vol - sqrt_alpha_bar * model_output) / sqrt_one_minus_alpha_bar
+                    elif pred_type == 'v':
+                        # eps = sqrt(1-alpha_bar) * x_t + sqrt(alpha_bar) * v_pred
+                        eps_pred = sqrt_one_minus_alpha_bar * current_vol + sqrt_alpha_bar * model_output
+                    else:
+                        raise ValueError(f"Unsupported prediction_type: {pred_type}")
+
+                # Update current volume using scheduler with epsilon prediction
+                current_vol, _ = scheduler.step(eps_pred, t, current_vol)
                 if t % 100 == 0:
                     chain = torch.cat((chain, current_vol.cpu()), dim=-1)
                 # Update combined input for next step
