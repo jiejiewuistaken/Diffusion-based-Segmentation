@@ -3,6 +3,8 @@
 This script reads a grayscale image, progressively adds independent Gaussian noise at each
 time step, and saves the resulting noisy images tiled side-by-side into a single PNG.
 
+The first tile is the original image (no noise). You can set spacing between tiles.
+
 Usage example:
     python noise_sequence.py --input /path/to/ct.png --output /path/to/noisy_steps.png \
         --steps 10 --sigma 0.1 --seed 42
@@ -75,11 +77,13 @@ def add_gaussian_noise_sequence(
     return results
 
 
-def tile_side_by_side_gray(images01: List[np.ndarray]) -> Image.Image:
+def tile_side_by_side_gray(images01: List[np.ndarray], spacing: int = 0, pad_value: float = 0.0) -> Image.Image:
     """Tile grayscale images side-by-side and return a PIL Image in mode 'L'.
 
     Args:
         images01: List of images in [0, 1], each with shape (H, W).
+        spacing: Horizontal spacing in pixels between tiles (non-negative).
+        pad_value: Background value for spacing in range [0, 1].
 
     Returns:
         A PIL Image where the images are concatenated along width, 8-bit grayscale.
@@ -92,9 +96,25 @@ def tile_side_by_side_gray(images01: List[np.ndarray]) -> Image.Image:
     if len(set(heights)) != 1 or len(set(widths)) != 1:
         raise ValueError("All images must have the same shape.")
 
+    if spacing < 0:
+        raise ValueError("'spacing' must be non-negative.")
+    pad_value = float(np.clip(pad_value, 0.0, 1.0))
+
+    h = heights[0]
+    w = widths[0]
+    n = len(images01)
+
     uint8_images = [(np.clip(img, 0.0, 1.0) * 255.0).astype(np.uint8) for img in images01]
-    concatenated = np.concatenate(uint8_images, axis=1)
-    return Image.fromarray(concatenated, mode="L")
+    total_width = n * w + (n - 1) * spacing
+
+    canvas = np.full((h, total_width), fill_value=int(round(pad_value * 255.0)), dtype=np.uint8)
+
+    x = 0
+    for tile in uint8_images:
+        canvas[:, x:x + w] = tile
+        x += w + spacing
+
+    return Image.fromarray(canvas, mode="L")
 
 
 def parse_args() -> argparse.Namespace:
@@ -108,6 +128,12 @@ def parse_args() -> argparse.Namespace:
         default=0.1,
         help="Gaussian noise standard deviation on [0,1] scale (default: 0.1).",
     )
+    parser.add_argument(
+        "--spacing",
+        type=int,
+        default=2,
+        help="Horizontal spacing in pixels between tiles (default: 2).",
+    )
     parser.add_argument("--seed", type=int, default=None, help="Optional random seed for reproducibility.")
     return parser.parse_args()
 
@@ -118,7 +144,8 @@ def main() -> None:
     noisy_images = add_gaussian_noise_sequence(
         image01=image01, steps=args.steps, sigma=args.sigma, seed=args.seed
     )
-    tiled = tile_side_by_side_gray(noisy_images)
+    images_to_tile = [image01] + noisy_images
+    tiled = tile_side_by_side_gray(images_to_tile, spacing=args.spacing)
     tiled.save(args.output)
 
 
