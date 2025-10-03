@@ -39,6 +39,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional, Tuple, Union
+from collections import deque
 import numpy as np
 import os
 import random
@@ -124,6 +125,50 @@ def _boundary_from_inside(mask_inside: np.ndarray) -> np.ndarray:
     eroded = _erode_binary_3x3(mask_inside)
     boundary = mask_inside & (~eroded)
     return boundary
+
+
+def _fill_holes_4_connected(mask_inside: np.ndarray) -> np.ndarray:
+    """Fill internal holes of a binary mask using 4-connected outside flood-fill.
+
+    Any background not connected to the outer border is considered a hole and will
+    be filled (set to True).
+    """
+    assert mask_inside.ndim == 2 and mask_inside.dtype == bool
+    h, w = mask_inside.shape
+    outside = np.zeros_like(mask_inside, dtype=bool)
+
+    q: deque[Tuple[int, int]] = deque()
+
+    def push_if_bg(y: int, x: int) -> None:
+        if 0 <= y < h and 0 <= x < w and (not mask_inside[y, x]) and (not outside[y, x]):
+            outside[y, x] = True
+            q.append((y, x))
+
+    # Seed with all background border pixels
+    for x in range(w):
+        push_if_bg(0, x)
+        push_if_bg(h - 1, x)
+    for y in range(h):
+        push_if_bg(y, 0)
+        push_if_bg(y, w - 1)
+
+    # BFS 4-connected in background
+    while q:
+        y, x = q.popleft()
+        for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            ny, nx = y + dy, x + dx
+            push_if_bg(ny, nx)
+
+    # Holes are background not connected to border
+    holes = (~mask_inside) & (~outside)
+    filled = mask_inside | holes
+    return filled
+
+
+def _outer_boundary_only(mask_inside: np.ndarray) -> np.ndarray:
+    """Compute only the exterior boundary of a binary mask (ignore internal hole boundaries)."""
+    filled = _fill_holes_4_connected(mask_inside)
+    return _boundary_from_inside(filled)
 
 
 def _nearest_upsample_bool(coarse: np.ndarray, height: int, width: int) -> np.ndarray:
@@ -316,7 +361,8 @@ def draw_jagged_shapes(
         height=height, width=width, center=blob_center,
         target_area_pixels=float(blob_area), grid_size=grid_size, seed=seed
     )
-    blob_boundary_coarse = _boundary_from_inside(blob_inside_coarse)
+    # Use only the single exterior boundary (no internal hole boundaries)
+    blob_boundary_coarse = _outer_boundary_only(blob_inside_coarse)
 
     # Upsample boundaries to full resolution
     ell_boundary_full = _nearest_upsample_bool(ell_boundary_coarse, height=height, width=width)
