@@ -1,0 +1,38 @@
+seed: 42
+device: cuda
+
+data:
+  train_csv: /data/train.csv
+  val_csv: /data/val.csv
+  test_csv: /data/test.csv
+  target_spacing: [1.5, 1.5, 1.5]
+  patch_size: [128, 160, 160]
+  augment: true
+
+conditioning:
+  channels: 3   # ct + tumor + optional probe
+  scalars: ["energy", "time"]
+
+diffusion:
+  num_timesteps: 1000
+  beta_schedule: linear
+  parameterization: eps  # or v
+  sampler: ddim
+  ddim_eta: 0.0
+  ddim_steps: 100
+
+model:
+  in_channels: 1           # noisy target x_t
+  cond_channels: 3         # condition image channels concatenated
+  base_channels: 64
+  depth: 4
+  attention_resolutions: [16]  # apply attention at 1/16 scale
+
+train:
+  batch_size: 1
+  num_workers: 4
+  max_epochs: 400
+  lr: 2.0e-4
+  weight_decay: 1.0e-5
+  mixed_precision: true
+  save_dir: runs/ddpm

@@ -1,3 +1,47 @@
+## Lung Ablation Zone Prediction (3D UNet baseline + 3D DDPM)
+
+### Quickstart
+
+1) Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+2) Prepare a CSV listing your samples (train/val/test):
+```csv
+ct_path,tumor_mask_path,target_mask_path,probe_mask_path,energy,time
+/data/ct_001.nii.gz,/data/tumor_001.nii.gz,/data/abl_001.nii.gz,,60,600
+```
+Notes:
+- `probe_mask_path` can be empty if not available.
+- `energy` and `time` are optional scalars; leave empty to skip.
+
+3) Edit `configs/train_unet.yaml` or `configs/train_ddpm.yaml` to point to your CSVs and set training hyperparameters.
+
+4) Train the baseline UNet:
+```bash
+python -m ablation_pred.training.train_unet --config configs/train_unet.yaml
+```
+
+5) Train the DDPM:
+```bash
+python -m ablation_pred.training.train_ddpm --config configs/train_ddpm.yaml
+```
+
+6) Evaluate:
+```bash
+python -m ablation_pred.eval.evaluate --config configs/train_unet.yaml --ckpt runs/unet/last.ckpt
+```
+
+### Inputs and Outputs
+- Inputs: pre-ablation CT (1 channel), tumor mask (1), optional probe mask (1), optional scalar conditioning (energy/time) broadcast to volumes.
+- Outputs:
+  - UNet: deterministic ablation probability map (sigmoid) -> threshold to get mask.
+  - DDPM: probabilistic ablation map via sampling; average multiple samples for mean prediction; quantify uncertainty with per-voxel variance.
+
+### Notes
+- Voxel spacing and patch size are configured in YAML; data are resampled on the fly.
+- Metrics include Dice, HD95, volume error, tumor coverage and 5–10 mm margin coverage.
 # Diffusion Models for Implicit Image Segmentation Ensembles
 
 We provide the official Pytorch implementation of the paper [Diffusion Models for Implicit Image Segmentation Ensembles](https://arxiv.org/abs/2112.03145) by Julia Wolleb, Robin Sandkühler, Florentin Bieder, Philippe Valmaggia, and Philippe C. Cattin.

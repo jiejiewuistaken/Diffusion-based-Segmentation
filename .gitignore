@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+*.swp
+*.swo
+runs/
+.venv/
+.idea/
+.vscode/
+*.nii
+*.nii.gz
+*.mha
+*.mhd
