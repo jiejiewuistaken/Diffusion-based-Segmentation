@@ -1,0 +1,26 @@
+version: 0.1
+
+scaler: standard  # standard | robust | none
+
+embedding:
+  method: umap  # umap | pca | none
+  n_components: 16
+  random_state: 42
+  umap:
+    n_neighbors: 15
+    min_dist: 0.1
+
+clustering:
+  algorithm: hdbscan  # hdbscan | kmeans
+  hdbscan:
+    min_cluster_size: 80
+    min_samples: 10
+    cluster_selection_epsilon: 0.0
+  kmeans:
+    k_min: 5
+    k_max: 25
+
+features:
+  drop_columns: [author_id]
+  # You can list feature columns to exclude here if needed
+  exclude: []

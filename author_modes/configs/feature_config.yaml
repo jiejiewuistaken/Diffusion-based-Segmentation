@@ -1,0 +1,16 @@
+version: 0.1
+observation_weeks: 12
+prediction_weeks: 4
+timezone: UTC
+# When true, missing numeric values are filled with 0 after aggregation
+fillna_zero: true
+
+# Optional feature toggles
+features:
+  compute_video_metrics: true
+  compute_live_metrics: true
+  compute_shop_metrics: true
+  compute_order_metrics: true
+
+# Optional: default path to data dictionary; can be overridden by CLI
+# data_dictionary_path: ../data_dictionary/data_dictionary_template.yaml

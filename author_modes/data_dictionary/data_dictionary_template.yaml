@@ -1,0 +1,195 @@
+version: 0.1
+last_updated: 2025-10-12
+owner: creator-insights
+contact: data-platform@your-company
+
+# This template defines the core source tables needed to model creator operating modes.
+# Fill in the `path` (or warehouse table) and validate column names/types before running the pipeline.
+
+collections:
+  authors:
+    description: Master data for creators/authors on the platform
+    grain: one row per author_id
+    primary_key: [author_id]
+    path: REPLACE_ME
+    columns:
+      - name: author_id
+        type: string
+        description: Unique creator identifier
+        required: true
+      - name: first_seen_ts
+        type: timestamp
+        description: First activity timestamp observed
+      - name: main_category
+        type: string
+        description: Creator's dominant category if available
+
+  short_videos:
+    description: Short-form video posts with/without cart
+    grain: one row per content_id (event-level optional)
+    primary_key: [content_id]
+    partitioning: event_date
+    path: REPLACE_ME
+    columns:
+      - name: author_id
+        type: string
+        description: Creator ID
+        required: true
+      - name: content_id
+        type: string
+        description: Video/post ID
+        required: true
+      - name: event_ts
+        type: timestamp
+        description: Publish timestamp (or event time)
+        required: true
+      - name: is_with_cart
+        type: boolean
+        description: Whether the post carries a shopping cart link
+      - name: category
+        type: string
+        description: Product or content topic category (if tagged)
+      - name: views
+        type: integer
+        description: Impressions or plays
+      - name: clicks
+        type: integer
+        description: Click-throughs to cart or product
+      - name: likes
+        type: integer
+      - name: comments
+        type: integer
+      - name: shares
+        type: integer
+      - name: orders
+        type: integer
+        description: Orders attributed to this content
+      - name: revenue
+        type: float
+        description: GMV attributed to this content in platform currency
+
+  live_sessions:
+    description: Live streaming sessions and performance
+    grain: one row per live_id
+    primary_key: [live_id]
+    partitioning: start_date
+    path: REPLACE_ME
+    columns:
+      - name: author_id
+        type: string
+        required: true
+      - name: live_id
+        type: string
+        required: true
+      - name: start_ts
+        type: timestamp
+        required: true
+      - name: end_ts
+        type: timestamp
+      - name: duration_sec
+        type: integer
+        description: Session duration in seconds (optional if end_ts present)
+      - name: peak_concurrent
+        type: integer
+      - name: views
+        type: integer
+      - name: clicks
+        type: integer
+      - name: orders
+        type: integer
+      - name: revenue
+        type: float
+
+  shop_window:
+    description: Storefront/橱窗 items and interactions
+    grain: one row per (author_id, product_id, exposure_ts) if event-level
+    primary_key: []
+    partitioning: exposure_date
+    path: REPLACE_ME
+    columns:
+      - name: author_id
+        type: string
+        required: true
+      - name: product_id
+        type: string
+      - name: exposure_ts
+        type: timestamp
+      - name: clicks
+        type: integer
+      - name: add_to_cart
+        type: integer
+      - name: orders
+        type: integer
+      - name: revenue
+        type: float
+
+  orders:
+    description: Orders attributed to creator activities
+    grain: one row per order_id
+    primary_key: [order_id]
+    partitioning: order_date
+    path: REPLACE_ME
+    columns:
+      - name: order_id
+        type: string
+        required: true
+      - name: author_id
+        type: string
+        required: true
+      - name: product_id
+        type: string
+      - name: order_ts
+        type: timestamp
+        required: true
+      - name: quantity
+        type: integer
+      - name: amount
+        type: float
+        description: GMV (gross) for the order line
+      - name: refund_flag
+        type: boolean
+      - name: margin
+        type: float
+        description: Estimated gross margin; optional
+
+  products:
+    description: Product catalog and attributes
+    grain: one row per product_id
+    primary_key: [product_id]
+    path: REPLACE_ME
+    columns:
+      - name: product_id
+        type: string
+        required: true
+      - name: category
+        type: string
+      - name: price
+        type: float
+      - name: brand
+        type: string
+      - name: margin_rate
+        type: float
+
+  traffic_events:
+    description: Optional generic traffic logs (impression/click) for content
+    grain: one row per event
+    primary_key: []
+    partitioning: event_date
+    path: REPLACE_ME
+    columns:
+      - name: author_id
+        type: string
+        required: true
+      - name: content_id
+        type: string
+      - name: event_ts
+        type: timestamp
+        required: true
+      - name: event_type
+        type: string
+        enum: [impression, click]
+      - name: device
+        type: string
+      - name: source
+        type: string
+        description: traffic source/channel
