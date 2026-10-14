@@ -33,7 +33,7 @@ STORED AS PARQUET;
 WITH
 params AS (
     SELECT  '${date}' AS end_date,
-            date_format(date_sub(to_date('${date}', 'yyyyMMdd'), 6), 'yyyyMMdd') AS start_date,
+            '${date-6}' AS start_date,
             2 AS ua_vv_min,
             100 AS author_vv_min,
             20 AS author_uv_min,
