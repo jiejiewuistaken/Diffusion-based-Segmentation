@@ -1,18 +1,34 @@
--- 垂类高鉴赏力人群 → 作者相对偏好 TGI（7 日窗，外溢找相似好作者）
--- ${date}：窗口结束日；消费取 [date-6, date]；鉴赏人群取 date 分区快照。
+-- =============================================================================
+-- Step1: 计算鉴赏人群下作者×指标 score，落中间表（不截 Top）
+-- 表: dm_growth_da.tmp_ht_author_tgi_score_7d PARTITION(date='${date}')
 --
--- 口径摘要：
---   1) 只保留「鉴赏用户 × 其合格垂类」上的消费；作者挂主垂类后与人群垂类对齐
---   2) UA 窗内 vv>=2；作者门槛占位 vv>=100 AND uv>=20
---   3) 率 = sum(act)/sum(vv)；分母 = 同人群同垂类 leave-one-out 的 sum/sum
---   4) 收缩 α=100（固定，快试）：tgi = 100 * (act+α*r_b)/( (vv+α)*r_b )
---   5) score = (tgi-100) * ln(1+uv)；每 category×metric Top 10000
---   6) 指标不含关注；合成后置，本任务只出分指标榜
---
--- 可选：将 seed_author 换成标杆 3000 表，用于诊断重叠（不参与过滤）
+-- 口径:
+--   消费窗 [${date}-6, ${date}]；人群/作者维表分区 ${date}
+--   人群不限 user_tag_ranking；作者垂类用 dm_author_stats_info_df.v2_first_tag_name
+--   leave-one-out 分母在「同垂类」内；rate=sum/sum；α=100
+--   score=(tgi_shrink-100)*ln(1+uv)；仅保留 tgi_shrink>100 且过作者门槛
+-- =============================================================================
 
 SET spark.sql.adaptive.enabled = TRUE;
 SET spark.sql.shuffle.partitions = 5000;
+
+CREATE TABLE IF NOT EXISTS dm_growth_da.tmp_ht_author_tgi_score_7d (
+    category                STRING,
+    metric                  STRING,
+    author_id               BIGINT,
+    vv                      BIGINT,
+    uv                      BIGINT,
+    act                     DOUBLE,
+    rate                    DOUBLE,
+    bench_rate              DOUBLE,
+    tgi_raw                 DOUBLE,
+    tgi_shrink              DOUBLE,
+    score                   DOUBLE,
+    top1_user_vv_ratio      DOUBLE,
+    author_quality_level    INT,
+    is_quality              INT
+) PARTITIONED BY (date STRING)
+STORED AS PARQUET;
 
 WITH
 params AS (
@@ -21,21 +37,44 @@ params AS (
             2 AS ua_vv_min,
             100 AS author_vv_min,
             20 AS author_uv_min,
-            100.0 AS shrink_alpha,
-            10000 AS top_k
+            100.0 AS shrink_alpha
 ),
 
--- 若有标杆作者表可替换此 CTE；无则 in_seed_3000 恒为 0
-seed_author AS (
-    SELECT  CAST(NULL AS BIGINT) AS author_id
-    WHERE   1 = 0
+-- 作者维：垂类 + 优质；tag 做与人群侧一致的归一
+author_dim AS (
+    SELECT  a.author_id,
+            CASE
+                WHEN a.v2_first_tag_name IS NULL
+                     OR a.v2_first_tag_name IN ('', ',', ',,')
+                     OR a.v2_first_tag_name IN ('未知', '未分类') THEN '未知'
+                WHEN a.v2_first_tag_name LIKE '%游戏%' THEN '游戏'
+                WHEN a.v2_first_tag_name LIKE '%医疗健康%' THEN '医疗健康'
+                WHEN a.v2_first_tag_name LIKE '%音乐%' THEN '音乐'
+                WHEN a.v2_first_tag_name LIKE '%文化%' THEN '文化'
+                WHEN a.v2_first_tag_name LIKE '%时政%' THEN '社会时政'
+                WHEN a.v2_first_tag_name LIKE '%汽车%' THEN '汽车'
+                WHEN a.v2_first_tag_name LIKE '%美食%' THEN '美食'
+                WHEN a.v2_first_tag_name LIKE '%随拍%' THEN '随拍'
+                WHEN a.v2_first_tag_name = 'AI原声影像' THEN 'AI原生影像'
+                WHEN a.v2_first_tag_name LIKE '%,%' THEN split(a.v2_first_tag_name, ',')[0]
+                ELSE a.v2_first_tag_name
+            END AS category,
+            CAST(a.author_quality_level AS INT) AS author_quality_level,
+            CASE WHEN CAST(a.author_quality_level AS INT) = 1 THEN 1 ELSE 0 END AS is_quality
+    FROM    aweme_medium.dm_author_stats_info_df a
+    CROSS   JOIN params p
+    WHERE   a.date = p.end_date
+    AND     a.author_id > 0
 ),
 
+-- 每个 user×tag 行已是合格鉴赏（生产 SQL 已过滤 cnt>1 且 rate>0.2）；不限 ranking
 hightaste_user AS (
     SELECT  DISTINCT
             h.user_id,
             CASE
-                WHEN h.tag_name IS NULL OR h.tag_name IN ('', ',', ',,') OR h.tag_name IN ('未知', '未分类') THEN '未知'
+                WHEN h.tag_name IS NULL
+                     OR h.tag_name IN ('', ',', ',,')
+                     OR h.tag_name IN ('未知', '未分类') THEN '未知'
                 WHEN h.tag_name LIKE '%游戏%' THEN '游戏'
                 WHEN h.tag_name LIKE '%医疗健康%' THEN '医疗健康'
                 WHEN h.tag_name LIKE '%音乐%' THEN '音乐'
@@ -55,25 +94,9 @@ hightaste_user AS (
     AND     h.tag_name IS NOT NULL
 ),
 
-consume_item AS (
-    SELECT  c.date,
-            c.user_id,
+consume_ua_day AS (
+    SELECT  c.user_id,
             c.item_author_id AS author_id,
-            CASE
-                WHEN c.v2_first_tag_name IS NULL
-                     OR c.v2_first_tag_name IN ('', ',', ',,')
-                     OR c.v2_first_tag_name IN ('未知', '未分类') THEN '未知'
-                WHEN c.v2_first_tag_name LIKE '%游戏%' THEN '游戏'
-                WHEN c.v2_first_tag_name LIKE '%医疗健康%' THEN '医疗健康'
-                WHEN c.v2_first_tag_name LIKE '%音乐%' THEN '音乐'
-                WHEN c.v2_first_tag_name LIKE '%文化%' THEN '文化'
-                WHEN c.v2_first_tag_name LIKE '%时政%' THEN '社会时政'
-                WHEN c.v2_first_tag_name LIKE '%汽车%' THEN '汽车'
-                WHEN c.v2_first_tag_name LIKE '%美食%' THEN '美食'
-                WHEN c.v2_first_tag_name LIKE '%随拍%' THEN '随拍'
-                WHEN c.v2_first_tag_name = 'AI原声影像' THEN 'AI原生影像'
-                ELSE c.v2_first_tag_name
-            END AS category,
             GREATEST(COALESCE(c.feed_page_vv_1d, 0), 0) AS vv,
             GREATEST(COALESCE(c.feed_page_comment_cnt_1d, 0), 0) AS comment_cnt,
             GREATEST(COALESCE(c.feed_page_download_cnt_1d, 0), 0) AS download_cnt,
@@ -93,19 +116,37 @@ consume_item AS (
     AND     COALESCE(c.feed_page_vv_1d, 0) > 0
 ),
 
--- 仅保留：鉴赏用户在其合格垂类上的消费
+-- 鉴赏用户 × 作者维表垂类对齐（只统计该用户在该垂类合格时，对该垂类作者的消费）
 ht_consume AS (
-    SELECT  c.*
-    FROM    consume_item c
+    SELECT  c.user_id,
+            c.author_id,
+            d.category,
+            d.author_quality_level,
+            d.is_quality,
+            c.vv,
+            c.comment_cnt,
+            c.download_cnt,
+            c.finish_vv,
+            c.outer_share_cnt,
+            c.like_cnt,
+            c.favourite_cnt,
+            c.enter_profile_cnt,
+            c.share_cnt,
+            c.inner_share_cnt
+    FROM    consume_ua_day c
+    INNER   JOIN author_dim d
+    ON      c.author_id = d.author_id
     INNER   JOIN hightaste_user h
     ON      c.user_id = h.user_id
-    AND     c.category = h.category
+    AND     d.category = h.category
 ),
 
 ua_raw AS (
     SELECT  user_id,
             author_id,
             category,
+            MAX(author_quality_level) AS author_quality_level,
+            MAX(is_quality) AS is_quality,
             SUM(vv) AS vv,
             SUM(comment_cnt) AS comment_cnt,
             SUM(download_cnt) AS download_cnt,
@@ -130,41 +171,11 @@ ua_valid AS (
     WHERE   u.vv >= p.ua_vv_min
 ),
 
--- 作者主垂类：鉴赏人群窗内消费 vv 最大的 category
-author_primary AS (
-    SELECT  author_id,
-            category
-    FROM    (
-                SELECT  author_id,
-                        category,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY author_id
-                            ORDER BY category_vv DESC, category
-                        ) AS rn
-                FROM    (
-                            SELECT  author_id,
-                                    category,
-                                    SUM(vv) AS category_vv
-                            FROM    ua_raw
-                            GROUP BY
-                                    author_id,
-                                    category
-                        ) s
-            ) t
-    WHERE   rn = 1
-),
-
-ua_primary AS (
-    SELECT  u.*
-    FROM    ua_valid u
-    INNER   JOIN author_primary ap
-    ON      u.author_id = ap.author_id
-    AND     u.category = ap.category
-),
-
 author_agg AS (
     SELECT  category,
             author_id,
+            MAX(author_quality_level) AS author_quality_level,
+            MAX(is_quality) AS is_quality,
             SUM(vv) AS vv,
             COUNT(DISTINCT user_id) AS uv,
             SUM(comment_cnt) AS comment_cnt,
@@ -176,18 +187,18 @@ author_agg AS (
             SUM(enter_profile_cnt) AS enter_profile_cnt,
             SUM(share_cnt) AS share_cnt,
             SUM(inner_share_cnt) AS inner_share_cnt,
-            -- 单用户 vv 浓度（诊断/可选过滤）
             MAX(vv) AS top1_user_vv
-    FROM    ua_primary
+    FROM    ua_valid
     GROUP BY
             category,
             author_id
 ),
 
--- 宽表转 metric 长表（不含关注）
 author_metric AS (
     SELECT  category,
             author_id,
+            author_quality_level,
+            is_quality,
             vv,
             uv,
             top1_user_vv,
@@ -239,53 +250,22 @@ scored AS (
                 - 100.0
             ) * ln(1.0 + a.uv) AS score,
             a.top1_user_vv / a.vv AS top1_user_vv_ratio,
-            CASE WHEN s.author_id IS NOT NULL THEN 1 ELSE 0 END AS in_seed_3000,
-            p.top_k,
-            p.author_vv_min,
-            p.author_uv_min
+            a.author_quality_level,
+            a.is_quality
     FROM    author_metric a
     INNER   JOIN category_metric_total t
     ON      a.category = t.category
     AND     a.metric = t.metric
     CROSS   JOIN params p
-    LEFT    JOIN seed_author s
-    ON      a.author_id = s.author_id
     WHERE   a.vv >= p.author_vv_min
     AND     a.uv >= p.author_uv_min
     AND     t.cat_vv > a.vv
     AND     (t.cat_act - a.act) > 0
-),
-
-filtered AS (
-    SELECT  *
-    FROM    scored
-    WHERE   tgi_shrink > 100
-),
-
-ranked AS (
-    SELECT  date,
-            category,
-            metric,
-            author_id,
-            vv,
-            uv,
-            act,
-            rate,
-            bench_rate,
-            tgi_raw,
-            tgi_shrink,
-            score,
-            top1_user_vv_ratio,
-            in_seed_3000,
-            ROW_NUMBER() OVER (
-                PARTITION BY date, category, metric
-                ORDER BY score DESC, tgi_shrink DESC, uv DESC, author_id
-            ) AS rn
-    FROM    filtered
 )
 
-SELECT  date,
-        category,
+INSERT OVERWRITE TABLE dm_growth_da.tmp_ht_author_tgi_score_7d
+PARTITION (date = '${date}')
+SELECT  category,
         metric,
         author_id,
         vv,
@@ -297,13 +277,8 @@ SELECT  date,
         tgi_shrink,
         score,
         top1_user_vv_ratio,
-        in_seed_3000,
-        rn
-FROM    ranked
-WHERE   rn <= 10000
-ORDER BY
-        date,
-        category,
-        metric,
-        rn
+        author_quality_level,
+        is_quality
+FROM    scored
+WHERE   tgi_shrink > 100
 ;
