@@ -3,7 +3,7 @@
 -- 表: dm_growth_da.tmp_ht_author_tgi_score_7d PARTITION(date='${date}')
 --
 -- 口径:
---   消费窗 [${date}-6, ${date}]；人群/作者维表分区 ${date}
+--   消费窗 [${date-6}, ${date}]（调度宏）；人群/作者维表分区 ${date}
 --   人群不限 user_tag_ranking；作者垂类用 dm_author_stats_info_df.v2_first_tag_name
 --   leave-one-out 分母在「同垂类」内；rate=sum/sum；α=100
 --   score=(tgi_shrink-100)*ln(1+uv)；仅保留 tgi_shrink>100 且过作者门槛
